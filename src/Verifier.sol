@@ -2,7 +2,9 @@
 pragma solidity 0.8.26;
 
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
+import {console} from "forge-std/console.sol";
 
+error InvalidSignatureLength();
 error InvalidSignature();
 
 /// Contract is implementing EIP-191 standard for message signing. It also uses EIP-712 for structured data for message signing
@@ -16,68 +18,101 @@ error InvalidSignature();
 /// ecrecover function takes keccak256 hash of encoded message and v,r,s
 /// the format of encoded message is abi.encodePacked(bytes1(0x19),bytes1(version),version specific data,data to sign);
 
+/// @title Implementation of signatures
+/// @author Sudip Roy
+/// @notice A very basic implementation to get a clear understanding(hopefully) of EIP-191,EIP-712
+/// @custom:experimental This is an experimental contract.
 contract Verifier {
     struct Message {
-        string _message;
+        string message;
+        address sender;
+    }
+
+    struct Branch {
+        uint256 id;
+        string name;
     }
 
     struct Person {
-        address _wallet;
-        string _name;
-    }
-
-    struct Content {
-        string _subject;
-        string _text;
+        string name;
+        address wallet;
+        Branch branch;
     }
 
     struct Mail {
-        Person _from;
-        Person _to;
-        string _subject;
-        string _text;
+        Person from;
+        Person to;
+        string subject;
+        string content;
     }
 
-    /// @notice keccak256 hashing of the type itself
+    /// @notice keccak256 hashing of the types
     bytes32 public constant DOMAIN_TYPE_HASH =
         keccak256(
-            "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+            "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract,bytes32 salt)"
         );
-
     bytes32 public constant MESSAGE_TYPE_HASH =
-        keccak256("Message(string _message)");
-
+        keccak256("Message(string message,address sender)");
+    bytes32 public constant BRANCH_TYPE_HASH =
+        keccak256("Branch(uint256 id,string name)");
     bytes32 public constant PERSON_TYPE_HASH =
-        keccak256("Person(address _wallet,string _name)");
-
-    bytes32 public constant CONTENT_TYPE_HASH =
-        keccak256("Content(string _subject,string _text)");
-
+        keccak256(
+            "Person(string name,address wallet,Branch branch)Branch(uint256 id,string name)"
+        );
     bytes32 public constant MAIL_TYPE_HASH =
         keccak256(
-            "Mail(Person _from,Person _to,string _subject,string _text)Person(address _wallet,string _name)"
+            "Mail(Person from,Person to,string subject,string content)Person(string name,address wallet,Branch branch)Branch(uint256 id,string name)"
         );
 
     bytes32 public immutable I_DOMAIN_SEPERATOR;
+    bytes32 private immutable I_SALT;
 
     constructor(string memory _name, string memory _version) {
-        I_DOMAIN_SEPERATOR = _hashDomain(
+        I_SALT = keccak256(
+            abi.encodePacked(address(this).code, block.timestamp)
+        );
+        I_DOMAIN_SEPERATOR = hashStructDomain(
             _name,
             _version,
             block.chainid,
-            address(this)
+            address(this),
+            I_SALT
         );
     }
 
-    function testMessage(
-        string memory _message
-    ) external pure returns (bytes memory) {
-        return bytes(_message);
+    function checkSValue(bytes32 _s) private pure returns (bool) {
+        if (
+            uint256(_s) >
+            0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0
+        ) {
+            revert InvalidSignature();
+        }
+        return true;
     }
 
+    function checkVValue(uint8 _v) private pure returns (bool) {
+        require(_v == 27 || _v == 28, "Invalid signature 'v' value");
+        return true;
+    }
+
+    /// @notice Helper function to convert uint to string
+    /// @param _number uint256 value to be converted
+    /// @return String value of the given uint
+    function uintToString(
+        uint256 _number
+    ) private pure returns (string memory) {
+        return Strings.toString(_number);
+    }
+
+    /// @notice Splits a signature in it's 3 components using inline assembly
+    /// @param _signature bytes signature
+    /// @return three components v,r,s
     function getVRSFromSignature(
         bytes memory _signature
-    ) public pure returns (uint8, bytes32, bytes32) {
+    ) private pure returns (uint8, bytes32, bytes32) {
+        if (_signature.length != 65) {
+            revert InvalidSignatureLength();
+        }
         uint8 _v;
         bytes32 _r;
         bytes32 _s;
@@ -86,74 +121,102 @@ contract Verifier {
             _s := mload(add(_signature, 64))
             _v := byte(0, mload(add(_signature, 96)))
         }
-
         return (_v, _r, _s);
     }
 
-    /// @notice Converting uint256 to string. Alternatively we can use openzeppeling Strings library. Example given below
-    function _uintToString(
-        uint256 _number
-    ) private pure returns (string memory) {
-        uint _digits = 1;
-        uint _num = _number;
-        while ((_num /= 10) != 0) {
-            _digits++;
-        }
-        bytes memory _result = new bytes(_digits);
-        while (_digits != 0) {
-            _digits--;
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    ///////////////////////////////// DATA WITH INTENDED VALIDATOR /////////////////////////////////////////////
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-            // The ASCII value of the modulo 10 value
-            _result[_digits] = bytes1(uint8(0x30 + (_number % 10)));
-            _number /= 10;
-        }
-        return string(_result);
+    /// @notice get signer for data with intended validator using whole signtature
+    /// @notice It maintains the EIP-191 format for signed data
+    /// @notice 0x19 <1 byte version> <version specific data> <data to sign>
+    /// bytes1(0x00) for data with inteded validtors
+    /// <version specific data> is address of the validator for 0x00
+    /// <data to sign> is _message
+    /// @param _message the message to be verified
+    /// @param _signature the signature to be verified against
+    /// @return signer address
+    function getSignerForValidator(
+        string memory _message,
+        bytes memory _signature
+    ) external view returns (address) {
+        bytes memory _prefixData = abi.encodePacked(
+            bytes1(0x19),
+            bytes1(0x00),
+            address(this),
+            _message
+        );
+        bytes32 _digest = keccak256(_prefixData);
+        (uint8 _v, bytes32 _r, bytes32 _s) = getVRSFromSignature(_signature);
+        checkSValue(_s);
+        checkVValue(_v);
+        address _signer = ecrecover(_digest, _v, _r, _s);
+
+        return _signer;
     }
 
-    /// @notice Converting uint256 to string using openzeppelin Strings library.
-    function _uintToStringUsingOpenzeppelinStrings(
-        uint256 _number
-    ) private pure returns (string memory) {
-        return Strings.toString(_number);
-    }
-
-    function _getDigest(
-        bytes memory _prefixData
-    ) private pure returns (bytes32) {
-        return keccak256(_prefixData);
+    /// @notice get signer for data with intended validator using v,r,s of signature
+    /// @notice It maintains the EIP-191 format for signed data
+    /// @notice 0x19 <1 byte version> <version specific data> <data to sign>
+    /// bytes1(0x00) for data with inteded validtors
+    /// <version specific data> is address of the validator for 0x00
+    /// <data to sign> is _message
+    /// @param _message the message to be verified
+    /// @param _v the v component
+    /// @param _r the r component
+    /// @param _s the s component
+    /// @return signer address
+    function getSignerForValidatorFromVRS(
+        string memory _message,
+        uint8 _v,
+        bytes32 _r,
+        bytes32 _s
+    ) external view returns (address) {
+        bytes memory _prefixData = abi.encodePacked(
+            bytes1(0x19),
+            bytes1(0x00),
+            address(this),
+            _message
+        );
+        bytes32 _digest = keccak256(_prefixData);
+        checkSValue(_s);
+        checkVValue(_v);
+        address _signer = ecrecover(_digest, _v, _r, _s);
+        return _signer;
     }
 
     /////////////////////////////////////////////////////////////////////////////////////////
     /////////////////////// personal_sign verification //////////////////////////////////////
     /////////////////////////////////////////////////////////////////////////////////////////
 
+    /// @notice get signer for personal sign messages using whole signtature
     /// @notice It maintains the EIP-191 format for signed data
     /// @notice 0x19 <1 byte version> <version specific data> <data to sign>
     /// <1 byte version> is bytes1(0x45) for personal_sign which is equivalent to "E"
-    /// <version specific data> is "thereum Signed Message:\n" + _uintToStringUsingOpenzeppelinStrings(bytes(_message).length)
+    /// <version specific data> is "thereum Signed Message:\n" + _uintToStringUsingOpenzeppelinStrings(bytes(_message).length) for 0x45
     /// <data to sign> is _message
-    function _prefiixMessage(
-        string memory _message
-    ) private pure returns (bytes memory) {
-        bytes memory _prefix = abi.encodePacked(
+    /// @param _message the message to be verified
+    /// @param _signature the signature to be verified against
+    /// @return signer address
+    function personalMessageSign(
+        string memory _message,
+        bytes memory _signature
+    ) external pure returns (address) {
+        bytes memory _messageInBytes = bytes(_message);
+        uint256 _messageLength = _messageInBytes.length;
+        bytes memory _prefixData = abi.encodePacked(
             bytes1(0x19),
             bytes1(0x45),
             "thereum Signed Message:\n",
-            _uintToStringUsingOpenzeppelinStrings(bytes(_message).length),
+            uintToString(_messageLength),
             _message
         );
+        bytes32 _digest = keccak256(_prefixData);
 
-        return _prefix;
-    }
-
-    function getSigner(
-        string memory _message,
-        uint8 _v,
-        bytes32 _r,
-        bytes32 _s
-    ) external pure returns (address) {
-        bytes memory _prefix = _prefiixMessage(_message);
-        bytes32 _digest = _getDigest(_prefix);
+        (uint8 _v, bytes32 _r, bytes32 _s) = getVRSFromSignature(_signature);
+        checkSValue(_s);
+        checkVValue(_v);
         address _signer = ecrecover(_digest, _v, _r, _s);
         return _signer;
     }
@@ -162,128 +225,123 @@ contract Verifier {
     /////////////////////// EIP-712 standard ////////////////////////////////////////////////
     /////////////////////////////////////////////////////////////////////////////////////////
 
-    /// @notice using keccak256 on _name and _version to keep it 32 bytes
-    /// @notice the format of data inside abi.encode for this particular type of(EIP-712 hashing of struct data) case
-    /// is Hash of the struct type, followed by all the data.
-    function _hashDomain(
+    /// @notice Struct hash of domain
+    /// @notice it follows the eip-712 structure of hashStruct, that is
+    /// hashStruct = keccak256(abi.encode(typeHash,32 bytes values in the order of struct definition))
+    /// @return bytes32 keccak256 hashed value of encode(typeHash||all the struct data)
+    function hashStructDomain(
         string memory _name,
         string memory _version,
-        uint256 _chainid,
-        address _verifyingAddress
+        uint256 _chainId,
+        address _verifyingContract,
+        bytes32 _salt
     ) private pure returns (bytes32) {
-        bytes32 _hash = keccak256(
-            abi.encode(
-                DOMAIN_TYPE_HASH,
-                keccak256(bytes(_name)),
-                keccak256(bytes(_version)),
-                _chainid,
-                _verifyingAddress
-            )
+        bytes memory _encodedData = abi.encode(
+            DOMAIN_TYPE_HASH,
+            keccak256(bytes(_name)),
+            keccak256(bytes(_version)),
+            _chainId,
+            _verifyingContract,
+            _salt
         );
-        return _hash;
+        return keccak256(_encodedData);
     }
 
     /////////////////////// For Single Struct ////////////////////////////////////////////////
 
-    /// @notice format of the data remains same irrespective of how many structs are there
-    /// a) the definition of struct b) the 32 bytes hash of the struct type (HASH_TYPE) and
-    /// c) and 32 bytes hash of the HASH_TYPE and it's values
-
-    function _prefixMessageEIP712(
+    /// @notice Struct hash of Message struct
+    /// @notice it follows the eip-712 structure of hashStruct, that is
+    /// hashStruct = keccak256(abi.encode(typeHash,32 bytes values in the order of struct definition))
+    /// @return bytes32 keccak256 hashed value of encode(typeHash||all the struct data)
+    function hashStructMessage(
         Message memory _message
-    ) private view returns (bytes memory) {
-        bytes memory _prefix = abi.encodePacked(
+    ) public pure returns (bytes32) {
+        bytes memory _encodedData = abi.encode(
+            MESSAGE_TYPE_HASH,
+            keccak256(bytes(_message.message)),
+            _message.sender
+        );
+        return keccak256(_encodedData);
+    }
+
+    /// @notice get signer for Structured data using whole signtature
+    /// @notice It maintains the EIP-191 format for signed data
+    /// @notice 0x19 <1 byte version> <version specific data> <data to sign>
+    /// <1 byte version> is bytes1(0x01) for Structured data EIP-712
+    /// <version specific data> is the domain seperator which is I_DOMAIN_SEPERATOR in our case
+    /// <data to sign> is 32 bytes hashed value of Struct Message which is defined in function hashStructMessage(Message memory _message)
+    /// @param _message the message to be verified
+    /// @param _signature the signature to be verified against
+    /// @return signer address
+    function getSignerStructuredData(
+        Message memory _message,
+        bytes memory _signature
+    ) external view returns (address) {
+        bytes memory _prefixData = abi.encodePacked(
             bytes1(0x19),
             bytes1(0x01),
             I_DOMAIN_SEPERATOR,
-            _hashMessage(_message)
+            hashStructMessage(_message)
         );
-
-        return _prefix;
-    }
-
-    /// @notice using keccak256 on _message._message to keep it 32 bytes
-    /// @notice the format of data inside abi.encode for this particular type of(EIP-712 hashing of struct data) case
-    /// is Hash of the struct type, followed by all the data.
-    function _hashMessage(
-        Message memory _message
-    ) private pure returns (bytes32) {
-        bytes32 _hash = keccak256(
-            abi.encode(MESSAGE_TYPE_HASH, keccak256(bytes(_message._message)))
-        );
-        return _hash;
-    }
-
-    function getSignerEIP712(
-        Message memory _message,
-        uint8 _v,
-        bytes32 _r,
-        bytes32 _s
-    ) external view returns (address) {
-        bytes memory _prefix = _prefixMessageEIP712(_message);
-        bytes32 _digest = keccak256(_prefix);
-        ///(uint8 _v, bytes32 _r, bytes32 _s) = getVRSFromSignature(_signature);
+        bytes32 _digest = keccak256(_prefixData);
+        (uint8 _v, bytes32 _r, bytes32 _s) = getVRSFromSignature(_signature);
+        checkSValue(_s);
+        checkVValue(_v);
         address _signer = ecrecover(_digest, _v, _r, _s);
         return _signer;
     }
 
-    /////////////////////// For 2 Structs ////////////////////////////////////////////////
+    ///////////////////////////////// FOR MULTIPLE STRUCTS //////////////////////////////////////////////////
 
-    function _hashPerson(Person memory _person) private pure returns (bytes32) {
-        bytes32 _hash = keccak256(
-            abi.encode(
-                PERSON_TYPE_HASH,
-                _person._wallet,
-                keccak256(bytes(_person._name))
-            )
-        );
-        return _hash;
-    }
-
-    function _hashContent(
-        Content memory _content
+    function hashStructBranch(
+        Branch memory _branch
     ) private pure returns (bytes32) {
-        bytes32 _hash = keccak256(
-            abi.encode(
-                CONTENT_TYPE_HASH,
-                keccak256(bytes(_content._subject)),
-                keccak256(bytes(_content._text))
-            )
+        bytes memory _encoded = abi.encode(
+            BRANCH_TYPE_HASH,
+            _branch.id,
+            keccak256(bytes(_branch.name))
         );
-        return _hash;
+        return keccak256(_encoded);
     }
 
-    function _hashMail(Mail memory _mail) private pure returns (bytes32) {
-        bytes32 _hash = keccak256(
-            abi.encode(
-                MAIL_TYPE_HASH,
-                _hashPerson(_mail._from),
-                _hashPerson(_mail._to),
-                keccak256(bytes(_mail._subject)),
-                keccak256(bytes(_mail._text))
-            )
+    function hashStructPerson(
+        Person memory _person
+    ) private pure returns (bytes32) {
+        bytes memory _encoded = abi.encode(
+            PERSON_TYPE_HASH,
+            keccak256(bytes(_person.name)),
+            _person.wallet,
+            hashStructBranch(_person.branch)
         );
-        return _hash;
+        return keccak256(_encoded);
     }
 
-    function _prefixMail(
-        Mail memory _mail
-    ) private view returns (bytes memory) {
-        bytes memory _prefix = abi.encodePacked(
-            bytes1(0x19),
-            bytes1(0x01),
-            I_DOMAIN_SEPERATOR,
-            _hashMail(_mail)
+    function hashStructMail(Mail memory _mail) public pure returns (bytes32) {
+        bytes memory _encoded = abi.encode(
+            MAIL_TYPE_HASH,
+            hashStructPerson(_mail.from),
+            hashStructPerson(_mail.to),
+            keccak256(bytes(_mail.subject)),
+            keccak256(bytes(_mail.content))
         );
-        return _prefix;
+
+        return keccak256(_encoded);
     }
 
-    function getSignerMail(
+    function getSignerStructuredDataMultipleStructs(
         Mail memory _mail,
         bytes memory _signature
     ) external view returns (address) {
-        bytes32 _digest = keccak256(_prefixMail(_mail));
+        bytes memory _prefixData = abi.encodePacked(
+            bytes1(0x19),
+            bytes1(0x01),
+            I_DOMAIN_SEPERATOR,
+            hashStructMail(_mail)
+        );
+        bytes32 _digest = keccak256(_prefixData);
         (uint8 _v, bytes32 _r, bytes32 _s) = getVRSFromSignature(_signature);
+        checkSValue(_s);
+        checkVValue(_v);
         address _signer = ecrecover(_digest, _v, _r, _s);
         return _signer;
     }
