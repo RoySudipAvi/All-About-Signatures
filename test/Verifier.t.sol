@@ -10,8 +10,8 @@ import {HelperConfig, VeriferDeploy} from "script/Verifier.s.sol";
 contract VerifierTest is Test {
     using MessageHashUtils for bytes32;
 
-    uint256 private constant PRIVATE_KEY =
-        0xdf57089febbacf7ba0bc227dafbffa9fc08a93fdc68e1e42411a14efcf23656e;
+    uint256 private constant PRIVATE_KEY = 0xdf57089febbacf7ba0bc227dafbffa9fc08a93fdc68e1e42411a14efcf23656e;
+
     Verifier private s_signatures;
     address private s_signer;
     Vm.Wallet private s_aliceWallet;
@@ -20,9 +20,10 @@ contract VerifierTest is Test {
         0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0 + 1;
 
     function setUp() external {
+
         VeriferDeploy deploy = new VeriferDeploy();
         s_signatures = deploy.run();
-        //s_signatures = new Verifier("Demo Signatures", "1.0");
+       
         s_signer = vm.addr(PRIVATE_KEY);
         s_aliceWallet = vm.createWallet("alice");
     }
@@ -92,12 +93,12 @@ contract VerifierTest is Test {
         );
         (uint8 _v, bytes32 _r, bytes32 _s) = vm.sign(PRIVATE_KEY, _digest);
         bytes memory _signature = abi.encodePacked(_r, _s, _v);
-        console.logBytes(_signature);
+
         address _signerReturned = s_signatures.getSignerForValidator(
             _message,
             _signature
         );
-        console.log(_signerReturned);
+
         assertEq(s_signer, _signerReturned);
     }
 
@@ -131,8 +132,7 @@ contract VerifierTest is Test {
         );
         (uint8 _v, bytes32 _r, bytes32 _s) = vm.sign(PRIVATE_KEY, _digest);
         bytes memory _signature = abi.encodePacked(_r, _s, _v);
-        console.logBytes(_signature);
-        console.log(s_signer);
+
         Verifier.Message memory _Message = Verifier.Message({
             message: _message,
             sender: s_signer
@@ -181,7 +181,7 @@ contract VerifierTest is Test {
         );
         (uint8 _v, bytes32 _r, bytes32 _s) = vm.sign(s_aliceWallet, _digest);
         bytes memory _signature = abi.encodePacked(_r, _s, _v);
-        console.logBytes(_signature);
+
         address _signerReturned = s_signatures
             .getSignerStructuredDataMultipleStructs(_mail, _signature);
         assertEq(s_aliceWallet.addr, _signerReturned);
