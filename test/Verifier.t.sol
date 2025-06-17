@@ -5,12 +5,13 @@ import {Test, console} from "forge-std/Test.sol";
 import {Verifier, InvalidSignature, InvalidSignatureLength} from "src/Verifier.sol";
 import {Vm} from "forge-std/Vm.sol";
 import {MessageHashUtils} from "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import {HelperConfig, VeriferDeploy} from "script/Verifier.s.sol";
 
 contract VerifierTest is Test {
     using MessageHashUtils for bytes32;
 
-    uint256 private constant PRIVATE_KEY =
-        0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d;
+    uint256 private constant PRIVATE_KEY = 0xdf57089febbacf7ba0bc227dafbffa9fc08a93fdc68e1e42411a14efcf23656e;
+
     Verifier private s_signatures;
     address private s_signer;
     Vm.Wallet private s_aliceWallet;
@@ -19,7 +20,10 @@ contract VerifierTest is Test {
         0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0 + 1;
 
     function setUp() external {
-        s_signatures = new Verifier("Demo Signatures", "1.0");
+
+        VeriferDeploy deploy = new VeriferDeploy();
+        s_signatures = deploy.run();
+       
         s_signer = vm.addr(PRIVATE_KEY);
         s_aliceWallet = vm.createWallet("alice");
     }
@@ -89,10 +93,12 @@ contract VerifierTest is Test {
         );
         (uint8 _v, bytes32 _r, bytes32 _s) = vm.sign(PRIVATE_KEY, _digest);
         bytes memory _signature = abi.encodePacked(_r, _s, _v);
+
         address _signerReturned = s_signatures.getSignerForValidator(
             _message,
             _signature
         );
+
         assertEq(s_signer, _signerReturned);
     }
 
@@ -126,6 +132,7 @@ contract VerifierTest is Test {
         );
         (uint8 _v, bytes32 _r, bytes32 _s) = vm.sign(PRIVATE_KEY, _digest);
         bytes memory _signature = abi.encodePacked(_r, _s, _v);
+
         Verifier.Message memory _Message = Verifier.Message({
             message: _message,
             sender: s_signer
@@ -174,6 +181,7 @@ contract VerifierTest is Test {
         );
         (uint8 _v, bytes32 _r, bytes32 _s) = vm.sign(s_aliceWallet, _digest);
         bytes memory _signature = abi.encodePacked(_r, _s, _v);
+
         address _signerReturned = s_signatures
             .getSignerStructuredDataMultipleStructs(_mail, _signature);
         assertEq(s_aliceWallet.addr, _signerReturned);
